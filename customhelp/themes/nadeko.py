@@ -1,7 +1,7 @@
 from ..abc import ThemesMeta
-from ..core.base_help import (EMPTY_STRING, GLOBAL_CATEGORIES, BaguetteHelp,
-                              CategoryConvert, Context, EmbedField,
-                              HelpSettings, _, box, commands, discord, pagify)
+from ..core.base_help import (
+    EMPTY_STRING, GLOBAL_CATEGORIES, CategoryConvert, Context, EmbedField,
+    HelpSettings, _, box, pagify)
 
 
 class NadekoHelp(ThemesMeta):
@@ -22,11 +22,11 @@ class NadekoHelp(ThemesMeta):
             }
 
             emb["footer"]["text"] = tagline
-
+            emb["embed"]["description"] = description
             emb["title"] = f"{ctx.me.name} Help Menu"
             cat_titles = ""
             for cat in GLOBAL_CATEGORIES:
-                if cat.cogs:
+                if cat.cogs and await self.blacklist(ctx, cat.name):
                     cat_titles += f"• {cat.name}\n"
             # TODO Dont be a moron trying to pagify this or do we? yes we do, lmao.
             for i, vals in enumerate(pagify(cat_titles, page_length=1000)):

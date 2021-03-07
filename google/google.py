@@ -1,24 +1,20 @@
 import functools
 import urllib
 from collections import namedtuple
-from typing import Literal
 
 import aiohttp
 import discord
 import html2text
 from bs4 import BeautifulSoup
-
 from redbot.core import commands
 from redbot.core.bot import Red
 from redbot.core.utils import menus
-from redbot.core.utils.chat_formatting import pagify
-
-RequestType = Literal["discord_deleted_user", "owner", "user", "user_strict"]
 
 
+# TODO Add optional way to use from google search api
 class Google(commands.Cog):
     """
-    A simple google search
+    A Simple google search
     A fair bit of querying stuff is taken from  Kowlin's cog - https://github.com/Kowlin/refactored-cogs
     """
 
@@ -28,8 +24,7 @@ class Google(commands.Cog):
     @commands.guild_only()
     @commands.command()
     async def google(self, ctx, *, query: str = None):
-        """Search in google from discord
-        Note: This cog is done, with major references to Kowlin's cog - https://github.com/Kowlin/refactored-cogs"""
+        """Search in google from discord"""
         if not query:
             await ctx.send("Please enter something to search")
         else:

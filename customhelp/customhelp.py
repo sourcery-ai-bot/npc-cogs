@@ -1,29 +1,32 @@
 import asyncio
+import json
 import re
+from collections import Counter, defaultdict
+from inspect import getfile
 from itertools import chain
+from os import path
+from pathlib import Path
 from types import MethodType
-from typing import Dict, List, Literal, Union
+from typing import Literal
 
 import discord
 import yaml
-from discord.ext import commands as dpy_commands
-from tabulate import tabulate
-
 from redbot.core import Config, checks, commands
 from redbot.core.bot import Red
-from redbot.core.i18n import Translator
+from redbot.core.i18n import Translator, cog_i18n
 from redbot.core.utils import menus, predicates
 from redbot.core.utils.chat_formatting import box, pagify
-from redbot.core.utils.predicates import ReactionPredicate
+from tabulate import tabulate
 
 from . import themes
-from .core.base_help import BaguetteHelp
-from .core.category import GLOBAL_CATEGORIES, Category, CategoryConvert
-from .core.utils import EMOJI_REGEX, LINK_REGEX
+from .core import ARROWS, GLOBAL_CATEGORIES, set_menu
+from .core.base_help import EMPTY_STRING, BaguetteHelp
+from .core.category import Category, get_category
+from .core.utils import LINK_REGEX, emoji_converter
 
 RequestType = Literal["discord_deleted_user", "owner", "user", "user_strict"]
 
-_ = Translator("Help", __file__)
+_ = Translator("CustomHelp", __file__)
 
 # Swtichable alphabetic ordered display
 # Crowdin stuff ;-;
@@ -48,12 +51,13 @@ Config Structure:
 """
 
 
+@cog_i18n(_)
 class CustomHelp(commands.Cog):
     """
     A custom customisable help for fun and profit
     """
 
-    __version__ = "0.4.0"
+    __version__ = "0.6.3"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -81,7 +85,10 @@ class CustomHelp(commands.Cog):
                 "react": True,
                 "set_formatter": False,
                 "thumbnail": None,
+                "timeout": 30,
+                "replies": False,
             },
+            "blacklist": {"nsfw": [], "dev": []},
         }
         self.config.register_global(**self.chelp_global)
 
@@ -100,7 +107,13 @@ class CustomHelp(commands.Cog):
         # Blocking?
         # await self.config.clear_all()
         my_categories = await self.config.categories()
-        GLOBAL_CATEGORIES[:] = [Category(**i) for i in my_categories]
+        # GLOBAL_CATEGORIES[:] = [Category(**i) for i in my_categories]
+        # Correct the emoji types
+        GLOBAL_CATEGORIES[:] = []
+        for cat in my_categories:
+            cat_obj = Category(**cat)
+            cat_obj.reaction = emoji_converter(self.bot, cat_obj.reaction)
+            GLOBAL_CATEGORIES.append(cat_obj)
 
         # make the uncategorised cogs
         all_loaded_cogs = set(self.bot.cogs.keys())
@@ -114,7 +127,7 @@ class CustomHelp(commands.Cog):
                 name=uncat_config["name"] if uncat_config["name"] else "uncategorised",
                 desc=uncat_config["desc"] if uncat_config["desc"] else "No category commands",
                 long_desc=uncat_config["long_desc"] if uncat_config["long_desc"] else "",
-                reaction=uncat_config["reaction"] if uncat_config["reaction"] else None,
+                reaction=emoji_converter(self.bot, uncat_config["reaction"]),
                 cogs=list(uncategorised),
             )
         )
@@ -123,11 +136,13 @@ class CustomHelp(commands.Cog):
         """Adds the themes and loads the formatter"""
         # This is needed to be on top so that Cache gets populated no matter what (supplements chelp create)
         await self.refresh_cache()
-        if not (await self.config.settings.set_formatter()):
+        settings = await self.config.settings()
+        set_menu(settings["replies"])
+        if not settings["set_formatter"]:
             return
         main_theme = BaguetteHelp(self.bot, self.config)
         theme = await self.config.theme()
-        if all(theme.values()) == None:
+        if all(theme.values()) is None:
             pass
         else:
             for feature in theme:
@@ -145,16 +160,111 @@ class CustomHelp(commands.Cog):
     @commands.Cog.listener("on_cog_add")
     async def handle_new_cog_entries(self, cog: commands.Cog):
         cog_name = cog.__class__.__name__
-        for cat in GLOBAL_CATEGORIES:
-            if cog_name in cat.cogs:
-                break
-        else:
-            GLOBAL_CATEGORIES[-1].cogs.append(cog_name)
+        # More work on this please
+        if GLOBAL_CATEGORIES:
+            for cat in GLOBAL_CATEGORIES:
+                if cog_name in cat.cogs:
+                    break
+            else:
+                GLOBAL_CATEGORIES[-1].cogs.append(cog_name)
 
     @checks.is_owner()
     @commands.group()
     async def chelp(self, ctx):
         """Configure your custom help"""
+
+    @chelp.command()
+    async def info(self, ctx):
+        """Short info about various themes"""
+        emb = discord.Embed(color=await ctx.embed_color(), title="All Themes")
+        for theme in themes.list:
+            emb.add_field(name=theme, value=themes.list[theme].__doc__, inline=False)
+        await ctx.send(embed=emb)
+
+    @chelp.command()
+    async def auto(self, ctx):
+        """Auto categorise cogs based on it's tags and display them"""
+        data = {}
+        # Thanks trusty pathlib is awesome.
+        for k, a in self.bot.cogs.items():
+            check = Path(getfile(a.__class__)).parent / "info.json"
+            if path.isfile(check):
+                with open(check, "r", encoding="utf-8") as f:
+                    try:
+                        tmp = json.load(f)
+                    except json.JSONDecodeError:
+                        # TODO Implement logger you lazy bum <_<
+                        print("[ERROR] Invaild JSON in cog {}".format(k))
+                    if "tags" in tmp:
+                        data[k] = [i.lower() for i in tmp["tags"]]
+                    else:
+                        data[k] = []
+            else:
+                data[k] = []
+
+        # Ofc grouping was done with the help random ppl helping me in pydis guild+stackoverflow :aha:
+        popular = Counter(chain.from_iterable(data.values()))
+        groups = defaultdict(set)
+        for key, tags in data.items():
+            if tags:
+                tag = max(tags, key=popular.get)
+                groups[tag].add(key)
+
+        final = {"uncategorised": []}
+        for i, j in groups.items():
+            if len(j) > 1:
+                final[i] = list(j)
+            else:
+                final["uncategorised"].extend(j)
+        for i in [
+            box(page, lang="yaml")
+            for page in pagify(yaml.dump(final), shorten_by=0, page_length=1990)
+        ]:
+            await ctx.send(i)
+
+    @chelp.command()
+    async def show(self, ctx):
+        """Show the current help settings"""
+        settings = await self.config.settings()
+        blocklist = await self.config.blacklist()
+        setting_mapping = {
+            "react": "usereactions",
+            "set_formatter": "iscustomhelp?",
+            "thumbnail": "thumbnail",
+            "timeout": "Timeout(secs)",
+            "replies": "Use replies",
+        }
+        other_settings = []
+        # url doesnt exist now, that's why the check. sorry guys.
+        for i, j in settings.items():
+            if i in setting_mapping:
+                other_settings.append(f"`{setting_mapping[i]:<13}`: {j}")
+        val = await self.config.theme()
+        val = "\n".join([f"`{i:<10}`: " + (j if j else "default") for i, j in val.items()])
+        emb = discord.Embed(
+            title="Custom help settings",
+            description=f"Cog Version: {self.__version__}",
+            color=await ctx.embed_color(),
+        )
+        emb.add_field(name="Theme", value=val)
+        emb.add_field(
+            name="Other Settings",
+            value="\n".join(other_settings),
+            inline=False,
+        )
+
+        if blocklist["nsfw"] or blocklist["dev"]:
+            emb.add_field(
+                name=EMPTY_STRING,
+                value="".join(
+                    f"**{i.capitalize()} categories:**\n{', '.join(blocklist[i])}\n"
+                    for i in blocklist
+                    if blocklist[i]
+                )
+                or EMPTY_STRING,
+                inline=False,
+            )
+        await ctx.send(embed=emb)
 
     @chelp.command(name="set")
     async def set_formatter(self, ctx, setval: bool):
@@ -208,6 +318,7 @@ class CustomHelp(commands.Cog):
         available_categories = [category.name for category in GLOBAL_CATEGORIES]
         # Remove uncategorised
         available_categories.pop(-1)
+        uncat_name = GLOBAL_CATEGORIES[-1].name
         # Not using cache (GLOBAL_CATEGORIES[-1].cogs) cause cog unloads aren't tracked
         all_cogs = set(self.bot.cogs.keys())
         uncategorised = all_cogs - set(
@@ -217,7 +328,6 @@ class CustomHelp(commands.Cog):
         success_cogs = []
 
         def parse_to_config(x):
-            name = x
             cogs = []
             for cog_name in parsed_data[x]:
                 if cog_name in uncategorised:
@@ -231,6 +341,9 @@ class CustomHelp(commands.Cog):
         # {"new": [{cat_conf_structure,...}, {...}] , "existing": { index: [cogs], ..}}
         to_config = {"new": [], "existing": {}}
         for category in parsed_data:
+            if uncat_name == category:
+                failed_cogs.append(category)
+                continue
             # check if category exist
             if category in available_categories:
                 # update the existing category
@@ -255,7 +368,7 @@ class CustomHelp(commands.Cog):
                 else "Nothing successful"
             )
             + (
-                f"\n\nThe following cogs failed due to invalid or already present in a category: `{'`,`'.join(failed_cogs)}` "
+                f"\n\nThe following categorie(s)/cog(s) failed due to invalid or already present in a category: `{'`,`'.join(failed_cogs)}` "
                 if failed_cogs
                 else ""
             )
@@ -302,36 +415,33 @@ class CustomHelp(commands.Cog):
         available_categories = [category.name for category in GLOBAL_CATEGORIES]
         # Remove uncategorised
         available_categories.pop(-1)
-        # Not using cache (GLOBAL_CATEGORIES[-1].cogs) cause cog unloads aren't tracked
-        all_cogs = set(self.bot.cogs.keys())
-        already_present_emojis = list(i.reaction for i in GLOBAL_CATEGORIES)
-        failed = []  # example: [('desc','categoryname')]
-
         # special naming for uncategorized stuff
         uncat_name = GLOBAL_CATEGORIES[-1].name
+        already_present_emojis = list(
+            str(i.reaction) for i in GLOBAL_CATEGORIES if i.reaction
+        ) + list(ARROWS.values())
+        failed = []  # example: [('desc','categoryname')]
 
         def validity_checker(category, item):
+            """Returns the thing needs to be saved on config if valid, else None"""
             if item[0] in check:
                 if item[0] == "name":
-                    return not (item[1] in available_categories)
+                    if not (item[1] in available_categories):
+                        return item[1]
                 # dupe emoji and valid emoji?
                 elif item[0] == "reaction":
-                    if item[1] not in already_present_emojis + [
-                        "\U0001f3d8\U0000fe0f"  # home emoji is taken :<
-                    ] or re.search(EMOJI_REGEX, item[1]):
-                        return True
-                    else:
-                        return False
+                    if item[1] not in already_present_emojis:
+                        return str(emoji_converter(self.bot, item[1]))
                 else:
-                    return True
+                    return item[1]
 
         # TODO bunch the config calls?
         for category in parsed_data:
             if uncat_name == category:
                 async with self.config.uncategorised() as unconf_cat:
                     for item in parsed_data[category]:
-                        if validity_checker(category, item):
-                            unconf_cat[item[0]] = item[1]
+                        if tmp := validity_checker(category, item):
+                            unconf_cat[item[0]] = tmp
                         else:
                             failed.append((item, category))
                         continue
@@ -339,8 +449,8 @@ class CustomHelp(commands.Cog):
                 async with self.config.categories() as conf_cat:
                     cat_index = available_categories.index(category)
                     for item in parsed_data[category]:
-                        if validity_checker(category, item):
-                            conf_cat[cat_index][item[0]] = item[1]
+                        if tmp := validity_checker(category, item):
+                            conf_cat[cat_index][item[0]] = tmp
                         else:
                             failed.append((item, category))
             else:
@@ -351,7 +461,10 @@ class CustomHelp(commands.Cog):
             if not failed
             else "The following things failed:\n"
             + "\n".join(
-                [f"{reason[0]}: {reason[1]}  failed in {category}" for reason, category in failed]
+                [
+                    f"`{reason[0]}`: {reason[1]}  failed in `{category}`"
+                    for reason, category in failed
+                ]
             )
         ):
             await ctx.send(page)
@@ -363,7 +476,6 @@ class CustomHelp(commands.Cog):
         """Show the list of categories and the cogs in them"""
         # TODO maybe its a better option to read from cache than config?
         available_categories_raw = await self.config.categories()
-        available_categories = (category["name"] for category in available_categories_raw)
         all_cogs = set(self.bot.cogs.keys())
         uncategorised = all_cogs - set(
             chain(*(category["cogs"] for category in available_categories_raw))
@@ -375,7 +487,9 @@ class CustomHelp(commands.Cog):
             joined += "+ {}:\n".format(category["name"])
             for cog in sorted(category["cogs"]):
                 joined += "  - {}\n".format(cog)
-        joined += "\n+ {}:\n".format("uncategorised")
+        joined += "\n+ {}: (This is where the uncategorised cogs go in)\n".format(
+            GLOBAL_CATEGORIES[-1].name
+        )
         for name in sorted(uncategorised):
             joined += "  - {}\n".format(name)
         for page in pagify(joined, ["\n"], shorten_by=16):
@@ -420,7 +534,7 @@ class CustomHelp(commands.Cog):
         else:
             await ctx.send("Theme not found")
 
-    @chelp.command()
+    @chelp.group(invoke_without_command=True)
     async def reset(self, ctx):
         """Resets all settings to default **custom** help \n use `[p]chelp set 0` to revert back to the old help"""
         msg = await ctx.send("Are you sure? This will reset everything back to the default theme.")
@@ -433,7 +547,32 @@ class CustomHelp(commands.Cog):
             await self.config.theme.set(
                 {"cog": None, "category": None, "command": None, "main": None}
             )
+            await self.refresh_cache()
             await ctx.send("Reset successful")
+        else:
+            await ctx.send("Aborted")
+
+    @reset.command(hidden=True)
+    async def hard(self, ctx):
+        """Hard reset, clear everything"""
+        await ctx.send(
+            "Warning: You are about to delete EVERYTHING!, type `y` to continue else this will abort"
+        )
+        try:
+            msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=60,
+            )
+        except asyncio.TimeoutError:
+            return await ctx.send("Timed out, please try again.")
+        if msg.content == "y":
+            # TODO there must be a better method in getting the defaults. remember?
+            await self.config.clear_all()
+            self.config.register_global(**self.chelp_global)
+            self.bot.reset_help_formatter()
+            await self._setup()
+            await ctx.send("Cleared everything.")
         else:
             await ctx.send("Aborted")
 
@@ -480,79 +619,114 @@ class CustomHelp(commands.Cog):
             return await ctx.send("Timed out, please try again.")
         if msg.content == "y":
             # TODO there must be a better method in getting the defaults. remember?
-            await self.config.clear_all()
-            self.config.register_global(**self.chelp_global)
+            await self.config.categories.clear()
             await ctx.send("Cleared all categories")
             await self.refresh_cache()
             return
         await ctx.send("Aborted")
 
-    # TODO need to remove multiple categories?
-    @remove.command()
-    async def category(self, ctx, category: str):
-        """Remove a single category"""
-        all_cat = await self.config.categories()
-        all_cat = [i["name"] for i in all_cat]
-        if category in all_cat:
-            async with self.config.categories() as conf_cat:
-                conf_cat.pop(all_cat.index(category))
-            await self.refresh_cache()
-            await ctx.send(f"Successfully removed {category}")
-        # uncategorised
-        elif category == GLOBAL_CATEGORIES[-1].name:
-            await ctx.send(
-                f"You can't remove {category} cause it is where the uncategorised cogs go into"
-            )
-        else:
-            await ctx.send(f"Invalid category name: {category}")
+    @remove.command(aliases=["categories", "cat"])
+    async def category(self, ctx, *categories: str):
+        """Remove a multiple categories"""
+        # from [p]load
+        category_names = set(map(lambda cat: cat.rstrip(","), categories))
 
-    # TODO need to remove multiple cogs?
-    @remove.command()
-    async def cog(self, ctx, cog_name: str):
-        """Remove a cog from a category"""
-        # valid cog
-        if self.bot.get_cog(cog_name):
-            for cat in GLOBAL_CATEGORIES:
-                if cog_name in cat.cogs:
-                    if cat == GLOBAL_CATEGORIES[-1]:
-                        await ctx.send("You can't remove cogs from uncategorised category")
-                        return
-                    async with self.config.categories() as cat_conf:
-                        cat_conf[GLOBAL_CATEGORIES.index(cat)]["cogs"].remove(cog_name)
-                    await ctx.send(f"Successfully removed {cog_name} from {cat.name}")
-                    await self.refresh_cache()
-                    return
+        to_config = []
+        invalid = []
+        all_cat = [i.name for i in GLOBAL_CATEGORIES]
+        all_cat.pop(-1)
+        text = ""
+        for category in category_names:
+            for ind in range(len(all_cat)):
+                if category in all_cat[ind]:
+                    to_config.append(ind)
+                    break
             else:
-                # idk when this might happen, so having it.
-                await ctx.send("Something went wrong, report to cog owner")
-        else:
-            await ctx.send(f"Invaild cog name:`{cog_name}`")
+                # uncategorised
+                if category == GLOBAL_CATEGORIES[-1].name:
+                    text += _(
+                        "You can't remove {} cause it is where the uncategorised cogs go into\n\n"
+                    ).format(category)
+                else:
+                    invalid.append(category)
+
+        async with self.config.categories() as conf_cat:
+            for index in to_config:
+                conf_cat.pop(index)
+
+        text += (
+            _("Sucessfully removed: ") + (", ".join(map(lambda x: all_cat[x], to_config)) + "\n")
+            if to_config
+            else ""
+        )
+        if invalid:
+            text += _("These categories aren't present in the list:\n" + ",".join(invalid))
+        await self.refresh_cache()
+        await ctx.send(text)
+
+    @remove.command(aliases=["cogs"])
+    async def cog(self, ctx, *cog_names: str):
+        """Remove a cog(s) from across categories"""
+        # From Core [p]load xD, using set to avoid dupes
+        cog_names = set(map(lambda cog: cog.rstrip(","), cog_names))
+
+        to_config = []  # [(index_of_category,cog_name),()] (maybe use namedtuples here?)
+        uncat = []
+        invalid = []
+        # wait ctx.send("You can't remove cogs from uncategorised category")
+        def get_category_util(name):
+            for ind in range(len(GLOBAL_CATEGORIES)):
+                if name in GLOBAL_CATEGORIES[ind].cogs:
+                    return ind
+
+        for cog_name in cog_names:
+            # valid cog
+            if self.bot.get_cog(cog_name):
+                index = get_category_util(cog_name)
+                # cog is present in a category
+                if index is not None:
+                    if GLOBAL_CATEGORIES[index] == GLOBAL_CATEGORIES[-1]:
+                        uncat.append(cog_name)
+                    else:
+                        to_config.append((index, cog_name))
+                else:
+                    # This is a rare case to occur, basically "cog is loaded and valid but it didn't get registered in the GLOBAL_CATEGORIES cache"
+                    # Never came to this point, but having it as a check
+                    await ctx.send(
+                        f"Something errored out, kindly report to the owner of this cog, \ncog name:{cog_name}"
+                    )
+            else:
+                invalid.append(cog_name)
+        async with self.config.categories() as cat_conf:
+            for thing in to_config:
+                cat_conf[thing[0]]["cogs"].remove(thing[1])
+        text = ""
+        if to_config:
+            text = "Successfully removed the following\n"
+            last = None
+            for thing in sorted(to_config, key=lambda x: x[0]):
+                if last == thing[0]:
+                    text += " - {}\n".format(thing[1])
+                else:
+                    text += _("From {}:\n - {}\n").format(
+                        GLOBAL_CATEGORIES[thing[0]].name, thing[1]
+                    )
+                    last = thing[0]
+        if uncat:
+            text += (
+                "The following cogs are present in 'uncategorised' and cannot be removed:\n"
+                + (", ".join(uncat))
+            )
+        if invalid:
+            text += "The following cogs are invalid or unloaded:\n" + (", ".join(invalid))
+
+        await self.refresh_cache()
+        for page in pagify(text, page_length=1985, shorten_by=0):
+            await ctx.send(box(page, lang="yaml"))
 
     @chelp.group()
     async def settings(self, ctx):
         """Change various help settings"""
-
-    @chelp.command()
-    async def show(self, ctx):
-        """Show the current help settings"""
-        settings = await self.config.settings()
-        setting_mapping = {
-            "react": "usereactions",
-            "set_formatter": "iscustomhelp?",
-            "thumbnail": "thumbnail",
-        }
-        val = await self.config.theme()
-        val = "\n".join([f"`{i:<10}`: " + (j if j else "default") for i, j in val.items()])
-        emb = discord.Embed(title="Custom help settings", color=await ctx.embed_color())
-        emb.add_field(name="Theme", value=val)
-        emb.add_field(
-            name="Other Settings",
-            value="\n".join(
-                [f"`{setting_mapping[i]:<13}`: {j}" for i, j in settings.items()],
-            ),
-            inline=False,
-        )
-        await ctx.send(embed=emb)
 
     @settings.command(aliases=["usereaction"])
     async def usereactions(self, ctx, toggle: bool):
@@ -576,6 +750,99 @@ class CustomHelp(commands.Cog):
                 f["thumbnail"] = None
             await ctx.send("Reset thumbnail")
 
+    @settings.command(aliases=["usereplies", "reply"])
+    async def usereply(self, ctx, option: bool):
+        """Enable/Disable help menus to use replies"""
+        res = set_menu(option)
+        if res[1]:
+            await self.config.settings.replies.set(option)
+        await ctx.send(res[0])
+
+    @settings.command()
+    async def timeout(self, ctx, wait: int):
+        """Set how long the help menu must stay active"""
+        if wait > 20:
+            await self.config.settings.timeout.set(wait)
+            await ctx.send(f"Sucessfully set timeout to {wait}")
+        else:
+            await ctx.send("Timeout must be atleast 20 seconds")
+
+    @chelp.group()
+    async def nsfw(self, ctx):
+        """Add categories to nsfw, only displayed in nsfw channels"""
+
+    @nsfw.command(name="add")
+    async def add_nsfw(self, ctx, category: str):
+        """Add categories to the nsfw list"""
+        if cat_obj := get_category(category):
+            if "Core" in cat_obj.cogs:
+                return await ctx.send(
+                    "This category contains Core cog and shouldn't be hidden under any circumstances"
+                )
+            else:
+                async with self.config.blacklist.nsfw() as conf:
+                    if category not in conf:
+                        conf.append(category)
+                        await ctx.send(f"Sucessfully added {category} to nsfw category")
+                    else:
+                        await ctx.send(f"{category} is already present in nsfw blocklist")
+        else:
+            await ctx.send("Invalid category name")
+
+    @nsfw.command(name="remove")
+    async def remove_nsfw(self, ctx, category: str):
+        """Remove categories from the nsfw list"""
+        cat_obj = get_category(category) or (
+            category if category in await self.config.blacklist.nsfw() else None
+        )
+        if cat_obj:
+            async with self.config.blacklist.nsfw() as conf:
+                if category in conf:
+                    conf.remove(category)
+                    await ctx.send(f"Sucessfully removed {category} from nsfw category")
+                else:
+                    await ctx.send(f"{category} is not present in nsfw blocklist")
+        else:
+            await ctx.send("Invalid category name")
+
+    @chelp.group()
+    async def dev(self, ctx):
+        """Add categories to dev, only displayed to the bot owner(s)"""
+
+    @dev.command(name="add")
+    async def add_dev(self, ctx, category: str):
+        """Add categories to the dev list"""
+        if cat_obj := get_category(category):
+            if "Core" in cat_obj.cogs:
+                return await ctx.send(
+                    "This category contains Core cog and shouldn't be hidden under any circumstances"
+                )
+            else:
+                async with self.config.blacklist.dev() as conf:
+                    if category not in conf:
+                        conf.append(category)
+                        await ctx.send(f"Sucessfully added {category} to dev list")
+                    else:
+                        await ctx.send(f"{category} is already present in dev list")
+        else:
+            await ctx.send("Invalid category name")
+
+    @dev.command(name="remove")
+    async def remove_dev(self, ctx, category: str):
+        """Remove categories from the dev list"""
+        cat_obj = get_category(category) or (
+            category if category in await self.config.blacklist.dev() else None
+        )
+        if cat_obj:
+            async with self.config.blacklist.dev() as conf:
+                if category in conf:
+                    conf.remove(category)
+                    await ctx.send(f"Sucessfully removed {category} from dev category")
+                else:
+                    await ctx.send(f"{category} is not present in dev list")
+        else:
+            await ctx.send("Invalid category name")
+
     @chelp.command(aliases=["getthemes"])
     async def listthemes(self, ctx):
         """List the themes and available features"""
@@ -594,26 +861,6 @@ class CustomHelp(commands.Cog):
         )
 
         await ctx.send(box(final))
-
-    async def parse_yaml(self, ctx, content):
-        try:
-            parsed_data = yaml.safe_load(content)
-        except yaml.parser.ParserError:
-            await ctx.send("Wrongly formatted")
-            return
-        except yaml.scanner.ScannerError as e:
-            await ctx.send(box(e))
-            return
-        if type(parsed_data) != dict:
-            await ctx.send("Invalid Format")
-            return
-
-        # TODO pls get a better type checking method
-        for i in parsed_data:
-            if type(parsed_data[i]) != list:
-                await ctx.send("Invalid Format")
-                return
-        return parsed_data
 
     @commands.command(aliases=["findcat"])
     async def findcategory(self, ctx, *, command):
@@ -637,6 +884,28 @@ class CustomHelp(commands.Cog):
                 await ctx.send(embed=em)
         else:
             await ctx.send("Command not found")
+
+    async def parse_yaml(self, ctx, content):
+        """Parse the yaml with basic structure checks"""
+        # TODO make this as an util function?
+        try:
+            parsed_data = yaml.safe_load(content)
+        except yaml.parser.ParserError:
+            await ctx.send("Wrongly formatted")
+            return
+        except yaml.scanner.ScannerError as e:
+            await ctx.send(box(e))
+            return
+        if type(parsed_data) != dict:
+            await ctx.send("Invalid Format")
+            return
+
+        # TODO pls get a better type checking method
+        for i in parsed_data:
+            if type(parsed_data[i]) != list:
+                await ctx.send("Invalid Format")
+                return
+        return parsed_data
 
     async def red_delete_data_for_user(self, *, requester: RequestType, user_id: int) -> None:
         # TODO: Replace this with the proper end user data removal handling.

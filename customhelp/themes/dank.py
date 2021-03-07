@@ -1,8 +1,7 @@
 from ..abc import ThemesMeta
-from ..core.base_help import (EMPTY_STRING, GLOBAL_CATEGORIES, BaguetteHelp,
-                              CategoryConvert, Context, EmbedField,
-                              HelpSettings, _, box, cast, commands, discord,
-                              humanize_timedelta, pagify)
+from ..core.base_help import (
+    EMPTY_STRING, GLOBAL_CATEGORIES, CategoryConvert, Context, EmbedField,
+    HelpSettings, _, cast, commands, humanize_timedelta, pagify)
 
 
 class DankHelp(ThemesMeta):
@@ -24,12 +23,13 @@ class DankHelp(ThemesMeta):
 
             emb["footer"]["text"] = tagline
             emb["embed"]["description"] = description
-            category_text = ""
             emb["title"] = f"{ctx.me.name} Help Menu"
             # Maybe add category desc somewhere?
             for cat in GLOBAL_CATEGORIES:
-                if cat.cogs:
-                    title = (cat.reaction + " " if cat.reaction else "") + cat.name.capitalize()
+                if cat.cogs and await self.blacklist(ctx, cat.name):
+                    title = (
+                        str(cat.reaction) + " " if cat.reaction else ""
+                    ) + cat.name.capitalize()
                     emb["fields"].append(
                         EmbedField(
                             title,
@@ -72,7 +72,7 @@ class DankHelp(ThemesMeta):
             }
 
             emb["embed"]["title"] = (
-                (obj.reaction if obj.reaction else "") + " " + obj.name.capitalize()
+                (str(obj.reaction) if obj.reaction else "") + " " + obj.name.capitalize()
             )
             emb["footer"]["text"] = tagline
             if description:
@@ -129,7 +129,6 @@ class DankHelp(ThemesMeta):
         signature = _("`{ctx.clean_prefix}{command.qualified_name} {command.signature}`").format(
             ctx=ctx, command=command
         )
-        aliases = command.aliases
         subcommands = None
 
         if hasattr(command, "all_commands"):

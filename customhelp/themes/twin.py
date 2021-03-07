@@ -1,7 +1,7 @@
 from ..abc import ThemesMeta
-from ..core.base_help import (EMPTY_STRING, GLOBAL_CATEGORIES, BaguetteHelp,
-                              CategoryConvert, Context, EmbedField,
-                              HelpSettings, _, box, commands, discord, pagify)
+from ..core.base_help import (
+    EMPTY_STRING, GLOBAL_CATEGORIES, CategoryConvert, Context, EmbedField,
+    HelpSettings, _, pagify)
 
 
 class TwinHelp(ThemesMeta):
@@ -33,11 +33,11 @@ class TwinHelp(ThemesMeta):
 
             emb["title"] = f"{ctx.me.name} Help Menu"
             for cat in GLOBAL_CATEGORIES:
-                if cat.cogs:
+                if cat.cogs and await self.blacklist(ctx, cat.name):
                     cog_names = "`" + "` `".join(cat.cogs) + "`" if cat.cogs else ""
                     for i, page in enumerate(pagify(cog_names, page_length=1000, shorten_by=0)):
                         if i == 0:
-                            title = (cat.reaction or "") + f"  __{cat.name.capitalize()}:__ "
+                            title = (str(cat.reaction) or "") + f"  __{cat.name.capitalize()}:__ "
                         else:
                             title = EMPTY_STRING
                         emb["fields"].append(EmbedField(title, cog_names, False))
