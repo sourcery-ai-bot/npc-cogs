@@ -9,8 +9,13 @@ import tabulate
 
 from redbot.core import checks, commands
 from redbot.core.commands.context import Context
-from redbot.core.commands.help import (HelpSettings, NoCommand, NoSubCommand,
-                                       dpy_commands, mass_purge)
+from redbot.core.commands.help import (
+    HelpSettings,
+    NoCommand,
+    NoSubCommand,
+    dpy_commands,
+    mass_purge,
+)
 from redbot.core.i18n import Translator
 from redbot.core.utils import menus
 from redbot.core.utils.chat_formatting import box, humanize_timedelta, pagify
@@ -96,9 +101,23 @@ class BaguetteHelp(commands.RedHelpFormatter):
             isuncategory = True
         for cogname, cog in (*sorted(ctx.bot.cogs.items()), (None, None)):
             # TODO test this if condition, cause i can't trust my math
-            if (cogname in category.cogs) or (isuncategory and cogname == None):
-                cm = await self.get_cog_help_mapping(ctx, cog, help_settings=help_settings)
-                if cm:
+            if (cogname in category.cogs) or (isuncategory and cogname is None):
+                if cm := await self.get_cog_help_mapping(ctx, cog, help_settings=help_settings):
+                    sorted_iterable.append((cogname, cm))
+        return sorted_iterable
+
+    async def get_all_categories_help_mapping(self, ctx, category, help_settings: HelpSettings):
+        """This is similar to get_bot_help_mapping but returns categories instead"""
+        if not await self.blacklist(ctx, category.name):
+            return
+        sorted_iterable = []
+        isuncategory = False
+        if category.name == GLOBAL_CATEGORIES[-1].name:
+            isuncategory = True
+        for cogname, cog in (*sorted(ctx.bot.cogs.items()), (None, None)):
+            # TODO test this if condition, cause i can't trust my math
+            if (cogname in category.cogs) or (isuncategory and cogname is None):
+                if cm := await self.get_cog_help_mapping(ctx, cog, help_settings=help_settings):
                     sorted_iterable.append((cogname, cm))
         return sorted_iterable
 
@@ -402,16 +421,13 @@ class BaguetteHelp(commands.RedHelpFormatter):
 
             category_text = ""
             emb["title"] = f"{ctx.me.name} Help Menu"
-            for i in pagify(
-                "\n".join(
-                    [
-                        f"{cat.reaction if cat.reaction else ''} `{ctx.clean_prefix}help {cat.name:<10}:`**{cat.desc}**\n"
-                        for cat in GLOBAL_CATEGORIES
-                        if cat.cogs
-                    ]
-                ),
-                page_length=1018,
-            ):
+            send_emojis = []
+            text = ""
+            for cat in await self.filter_categories(ctx, GLOBAL_CATEGORIES):
+                text += f"{str(cat.reaction) if cat.reaction else ''} `{ctx.clean_prefix}help {cat.name:<10}:`**{cat.desc}**\n\n"
+                if cat.reaction:
+                    send_emojis.append(cat.reaction)
+            for i in pagify(text, page_length=1018):
                 emb["fields"].append(EmbedField("Categories:", i, False))
 
             pages = await self.make_embeds(ctx, emb, help_settings=help_settings)
@@ -424,6 +440,7 @@ class BaguetteHelp(commands.RedHelpFormatter):
                     embed=True,
                     help_settings=help_settings,
                     add_emojis=((await self.config.settings())["react"]) and True,
+                    emoji_list=send_emojis,
                 )
 
     # TODO maybe try lazy loading
@@ -496,6 +513,7 @@ class BaguetteHelp(commands.RedHelpFormatter):
         embed: bool = True,
         help_settings: HelpSettings = None,
         add_emojis: bool = False,
+        emoji_list: list = None,
     ):
         """
         Sends pages based on settings.
@@ -557,18 +575,30 @@ class BaguetteHelp(commands.RedHelpFormatter):
             # TODO important!
             if add_emojis:
                 # Adding additional category emojis , regex from dpy server
-                for cat in GLOBAL_CATEGORIES:
-                    if cat.reaction:
-                        match = re.search(
-                            EMOJI_REGEX,
-                            cat.reaction,
-                        )
-                        if emj := (
-                            self.bot.get_emoji(int(match.group("id"))) if match else cat.reaction
-                        ):
-                            c[emj] = react_page
-                c["\U0001f3d8\U0000fe0f"] = home_page
-            # Allow other things to happen during menu timeout/interaction.
-            asyncio.create_task(menus.menu(ctx, pages, c, message=m))
-            # menu needs reactions added manually since we fed it a message
-            menus.start_adding_reactions(m, c.keys())
+                for emoji in emoji_list:
+                    final_menu.add_button(await react_page(ctx, emoji, help_settings))
+                final_menu.add_button(await home_page(ctx, ARROWS["home"], help_settings))
+            await final_menu.start(ctx)
+
+    async def blacklist(self, ctx, name) -> bool:
+        """Some blacklist checks utils
+        Returns true if needed to be shown"""
+        blocklist = await self.config.blacklist()
+        a = (
+            ctx.channel.is_nsfw() if hasattr(ctx.channel, "is_nsfw") else True
+        ) or not name in blocklist["nsfw"]
+        b = await self.bot.is_owner(ctx.author) or not name in blocklist["dev"]
+        return a and b
+
+    async def filter_categories(self, ctx, categories: list) -> list:
+        blocklist = await self.config.blacklist()
+        is_owner = await self.bot.is_owner(ctx.author)
+        final = []
+        for name in categories:
+            # This condition is made using a simple kmap.
+            if (
+                (ctx.channel.is_nsfw() if hasattr(ctx.channel, "is_nsfw") else True)
+                or not name in blocklist["nsfw"]
+            ) and (is_owner or not name in blocklist["dev"]):
+                final.append(name)
+        return final
