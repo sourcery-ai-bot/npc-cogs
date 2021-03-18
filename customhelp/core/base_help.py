@@ -381,16 +381,8 @@ class BaguetteHelp(commands.RedHelpFormatter):
                 emb["fields"].append(field)
 
             emb["title"] = f"{ctx.me.name} Help Menu"
-            for i in pagify(
-                "\n".join(
-                    [
-                        f"{str(cat.reaction) if cat.reaction else ''} `{ctx.clean_prefix}help {cat.name:<10}:`**{cat.desc}**\n"
-                        for cat in GLOBAL_CATEGORIES
-                        if cat.cogs and await self.blacklist(ctx, cat.name)
-                    ]
-                ),
-                page_length=1018,
-            ):
+            for i in pagify("\n".join(f"{str(cat.reaction) if cat.reaction else ''} `{ctx.clean_prefix}help {cat.name:<10}:`**{cat.desc}**\n" for cat in GLOBAL_CATEGORIES
+                                if cat.cogs and await self.blacklist(ctx, cat.name)), page_length=1018):
                 emb["fields"].append(EmbedField("Categories:", i, False))
 
             pages = await self.make_embeds(ctx, emb, help_settings=help_settings)
@@ -556,6 +548,7 @@ class BaguetteHelp(commands.RedHelpFormatter):
         blocklist = await self.config.blacklist()
         a = (
             ctx.channel.is_nsfw() if hasattr(ctx.channel, "is_nsfw") else True
-        ) or not name in blocklist["nsfw"]
-        b = await self.bot.is_owner(ctx.author) or not name in blocklist["dev"]
+        ) or name not in blocklist["nsfw"]
+
+        b = await self.bot.is_owner(ctx.author) or name not in blocklist["dev"]
         return a and b
